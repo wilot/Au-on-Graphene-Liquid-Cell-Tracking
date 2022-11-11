@@ -1,0 +1,32 @@
+# Gauss Synthesiser Configuration
+#
+# Synthesiser has three stages; creation of defective virtual crystal, construction
+# of an image and ground-truth set based on the virtual crystal and the 
+# patcher-scrambler (which crops training images to patches and applies noise to
+# these patches).
+
+
+[sheet_construction]
+sheet_size = 250  # Size in multiples of the `sheet_constructor`'s output 
+adatom_species = "Au"  # Use species names accepted by ASE
+sheet_holes = 30  # How many randomly sized holes to make in the sheet
+sheet_adatoms = 200  # How many adatoms to sprinkle onto the sheet
+
+[image_construction]
+pixel_scale = 0.27093246579170227  # The size of the pixels in the training data, in angstrom
+atom_radius = 0.4  # The 1-sigma radius of the gaussians that form the atoms
+atom_species_order = ["C", "Au"]  # The atom species included in the output labels
+atom_brightnesses = false  # A list of the amplitudes of the gaussians for each species
+haadf_zcontrast_exponent = 1.3
+
+[patcher_and_scrambler]
+training_patch_size = 256  # The size of the trianing patches in pixels
+zoom = 1.5  # The following params are for atomai.utils.datatransform()
+poisson = false
+# gauss = [400, 800]
+gauss = false
+salt_and_pepper = false
+# background = true
+background = false
+contrast = false
+blur = false

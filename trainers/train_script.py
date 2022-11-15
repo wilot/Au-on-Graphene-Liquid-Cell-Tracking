@@ -27,11 +27,11 @@ initial_kernels = 32
 layers = 4
 model = UNet(1, 2, initial_kernels, layers, train_images.shape[-2:])
 
-criterion = nn.MultiLabelSoftMarginLoss()
+criterion = DiceBCELoss()
 optimiser = torch.optim.Adam(model.parameters(), lr=1e-4)
 
 trainer = Trainer(model, train_images, train_labels, test_images, test_labels, criterion, optimiser, device, 
-batch_size=50, training_cycles=200)
+batch_size=50, training_cycles=2000)
 
 trainer.run()
 

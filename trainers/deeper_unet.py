@@ -90,11 +90,11 @@ class HeadBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int):
         super(HeadBlock, self).__init__()
         self.conv = nn.Conv2d(in_ch, out_ch, (1, 1))
-        # self.activation = nn.Softmax()  #nn.Sigmoid()
+        self.activation = nn.Softmax()  #nn.Sigmoid()
 
     def forward(self, x):
         x = self.conv(x)
-        # x = self.activation(x)
+        x = self.activation(x)
         return x
 
 

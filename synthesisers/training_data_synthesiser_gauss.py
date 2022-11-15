@@ -15,6 +15,8 @@ from pathlib import Path
 
 import toml
 
+import dask.array as da
+import dask_ml.model_selection
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import convolve
@@ -357,18 +359,35 @@ if __name__ == "__main__":
 
     image_patch_stacks = [result[0] for result in results]
     gt_patch_stacks = [result[1] for result in results]
+
+    print("Saved patches to lists")
     
     image_patches = np.array(image_patch_stacks)
     image_patches = image_patches.reshape(-1, *image_patches.shape[2:])
-    image_patches = np.moveaxis(image_patches, 1, -1)
+    print(f"Images saved to numpy array of shape {image_patches.shape}")
+    image_patches = da.from_array(image_patches, chunks=(500, -1, -1, -1))  # Chunks ~1GB for 512x512 double
+    image_patches = da.moveaxis(image_patches, 1, -1)
+    print(f"{image_patches.chunks=}")
+    print(f"{image_patches.shape=}")
+    print(f"{image_patches.dtype=}")
 
     gt_patches = np.array(gt_patch_stacks)
     gt_patches = gt_patches.reshape(-1, *gt_patches.shape[2:])
+    print(f"Ground-truth masks saved to numpy array of shape {gt_patches.shape}")
+    gt_patches = da.from_array(gt_patches, chunks=(500, -1, -1, -1))  # Chunks 
+    print(f"{gt_patches.chunks=}")
+    print(f"{gt_patches.shape=}")
+    print(f"{gt_patches.dtype=}")
 
-    image_patches_train, images_patches_test, gt_patches_train, gt_patches_test = train_test_split(image_patches, 
-            gt_patches, test_size=0.25, random_state=42)
-    np.savez('au_on_graphene_gaussian_training_data_large.npz', X_train=image_patches_train, 
-            X_test=images_patches_test, y_train=gt_patches_train, y_test=gt_patches_test)
+    # image_patches_train, images_patches_test, gt_patches_train, gt_patches_test = train_test_split(image_patches, 
+    #         gt_patches, test_size=0.25, random_state=42)
+    # np.savez('au_on_graphene_gaussian_training_data_large.npz', X_train=image_patches_train, 
+    #         X_test=images_patches_test, y_train=gt_patches_train, y_test=gt_patches_test)
+
+    image_patches_train, images_patches_test, gt_patches_train, gt_patches_test = \
+        dask_ml.model_selection.train_test_split(image_patches, gt_patches, test_size=0.25, random_state=42)
+    da.to_hdf5('au_on_graphene_gausian_training_data_large.hdf5', {'/X_train': image_patches_train, 
+    '/X_test': images_patches_test, '/y_train': gt_patches_train, '/y_test': gt_patches_test})
 
     print("Program complete.")
 

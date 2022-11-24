@@ -10,6 +10,8 @@ import torch
 import torch.nn as nn
 import torch.optim
 import torch.nn.functional as F
+import torchvision.transforms
+
 import numpy as np
 import matplotlib.figure
 import matplotlib.pyplot as plt
@@ -128,9 +130,26 @@ class Trainer:
         ax.set_xlabel("Training Cycle")
         ax.set_ylabel("Loss")
         ax.set_title("Gradient Descent During Training")
+        ax.legend()
         if plot:
             plt.show()
         return fig
+
+
+class CrossEntropyLoss(nn.Module):
+    """A Cross Entropy Loss with cropping"""
+
+    def __init__(self):
+        super(CrossEntropyLoss, self).__init__()
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor):
+
+        if targets.shape[-2:] != inputs.shape[-2:]:
+            targets = crop_to_fit(targets, inputs.shape[-2:])
+
+        ce_loss = F.cross_entropy(inputs, targets)
+
+        return ce_loss
 
 
 class DiceLoss(nn.Module):
@@ -147,6 +166,9 @@ class DiceLoss(nn.Module):
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor):
         """Expects inputs and targets of shape (B, C, H, W) for batch, channel, height and width."""
 
+        if targets.shape[-2:] != inputs.shape[:-2]:
+            targets = crop_to_fit(targets, inputs.shape[-2:])
+
         epsilon = 1e-6  # For denominator numerical stability
 
         inputs = flatten(inputs)  # To shape (C, B*H*W)
@@ -157,8 +179,9 @@ class DiceLoss(nn.Module):
         if self.weights is not None:
             intersection = self.weights * intersection
         dice = (2. * intersection) / (denominator.clamp(min=epsilon))
-        loss = 1 - dice if not self.log_loss else -torch.log(dice)
-        return loss.sum() / 2.
+        dice_loss = 1 - dice if not self.log_loss else -torch.log(dice)
+        dice_loss = dice_loss.sum() / dice_loss.shape[0]
+        return dice_loss
 
     def __str__(self):
         name = "Dice Loss"
@@ -184,6 +207,9 @@ class DiceBCELoss(nn.Module):
         self.weights = weights
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor):
+
+        if targets.shape[-2:] != inputs.shape[:-2]:
+            targets = crop_to_fit(targets, inputs.shape[-2:])
 
         epsilon = 1e-6  # For denominator numerical stability
 
@@ -220,17 +246,22 @@ class FocalLoss(nn.Module):
     
     def forward(self, inputs, targets):
 
+        if targets.shape[-2:] != inputs.shape[:-2]:
+            targets = crop_to_fit(targets, inputs.shape[-2:])
+
         inputs = flatten(inputs)  # To shape (C, B*H*W)
         targets = flatten(targets)
 
-        BCE = F.binary_cross_entropy(inputs, targets, reduction='mean')
+        BCE = F.binary_cross_entropy(inputs, targets)
         BCE_exp = torch.exp(-BCE)
         focal_loss = self.alpha * (1-BCE_exp)**self.gamma * BCE
 
         if self.weights is not None:
             focal_loss = focal_loss * self.weights
+
+        focal_loss = focal_loss.sum()
         
-        return focal_loss.sum()
+        return focal_loss
 
     def __str__(self):
         name = f"Focal Loss (α={self.alpha :.1f}, γ={self.gamma :.1f})"
@@ -250,6 +281,10 @@ class TverskyLoss(nn.Module):
         self.log_loss = log_loss
 
     def forward(self, inputs, targets, smooth=1):
+
+        if targets.shape[-2:] != inputs.shape[:-2]:
+            targets = crop_to_fit(targets, inputs.shape[-2:])
+
         inputs = torch.reshape(inputs, (-1,))
         targets = torch.reshape(targets, (-1,))
 
@@ -264,10 +299,17 @@ class TverskyLoss(nn.Module):
         name = f"Tversky Loss (α={self.alpha :.1f}, β={self.beta :.1f})"
         return name
 
-@torch.jit.script  # I think this doesn't help...
+
 def flatten(tensor: torch.Tensor) -> torch.Tensor:
     "Flattens the tensor along all except the channel dimension i.e. (B, C, H, W) -> (C, B*H*W)"
 
     new_axis_order = (1, 0, 2, 3)  # Put the channel first, then flatten to shape (C, B*H*W)
     tensor = tensor.permute(new_axis_order).flatten(start_dim=1)
     return tensor
+
+
+def crop_to_fit(crop_tensor: torch.Tensor, crop_size: Tuple[int, int]) -> torch.Tensor:
+    """Crops a tensor to a specified size using centre-crop"""
+
+    cropped_tensor = torchvision.transforms.CenterCrop(crop_size)(crop_tensor)
+    return cropped_tensor

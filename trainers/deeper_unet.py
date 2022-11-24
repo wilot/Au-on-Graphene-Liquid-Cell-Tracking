@@ -15,7 +15,14 @@ import numpy as np
 
 
 class EncoderBlock(nn.Module):
-    """U-Net encoder block"""
+    """U-Net encoder block
+    
+    This encoder block has pooling at the beginning. While pooling could instead be done at the end an encoder block, 
+    and hence U-Net's first block could be an EncoderBlock, this would mean the outputs of all EncoderBlocks are 
+    already pooled. Skip connections require the output of the EncoderBlock *before* pooling and outputting pre and 
+    post-pooled tensors in a tuple isn't possible. Therefore, make the first convolutional block of U-Net an exception,
+    and the rest as pre-pooling encoder blocks.
+    """
 
     def __init__(self, in_ch: int, out_ch: int):
         super(EncoderBlock, self).__init__()
@@ -25,11 +32,11 @@ class EncoderBlock(nn.Module):
         self.pool = nn.MaxPool2d(2)
 
     def forward(self, x):
+        x = self.pool(x)
         x = self.conv1(x)
         x = self.activation(x)
         x = self.conv2(x)
         x = self.activation(x)
-        x = self.pool(x)
         return x
 
 
@@ -62,18 +69,26 @@ class DecoderBlock(nn.Module):
 
     def __init__(self, in_ch: int, out_ch: int):
         super(DecoderBlock, self).__init__()
-        self.upconv = nn.ConvTranspose2d(in_ch, out_ch, 2, 2)
+        self.in_ch = in_ch
+        self.out_ch = out_ch
+        self.upconv = nn.Sequential(
+            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),  # nn.ConvTranspose2d(in_ch, out_ch, 2, 2)
+            nn.Conv2d(in_ch, in_ch//2, kernel_size=3)
+        )
         self.conv1 = nn.Conv2d(in_ch, out_ch, kernel_size=3)
         self.conv2 = nn.Conv2d(out_ch, out_ch, kernel_size=3)
         self.activation = nn.LeakyReLU()
 
     def forward(self, x, skip_features):
-        x = self.upconv(x)  # Converts input from 2N -> N channels
+        x = self.upconv(x)  # Doubles image size and halves the number of channels
+        # print(f"{x.shape=}")
+        # print(f"{skip_features.shape=}")
+        # raise RuntimeError
         skip_features = self.crop(skip_features, x)  # Crops the skip features
-        x = torch.cat((skip_features, x), dim=1)  # Stacks (N+N) channels
-        x = self.conv1(x)  # 2N channels -> N channels
+        x = torch.cat((skip_features, x), dim=1)  # Stacks channels
+        x = self.conv1(x)
         x = self.activation(x)
-        x = self.conv2(x)  # N channels -> N channels
+        x = self.conv2(x)
         x = self.activation(x)
         return x
 
@@ -90,7 +105,7 @@ class HeadBlock(nn.Module):
     def __init__(self, in_ch: int, out_ch: int):
         super(HeadBlock, self).__init__()
         self.conv = nn.Conv2d(in_ch, out_ch, (1, 1))
-        self.activation = nn.Softmax()  #nn.Sigmoid()
+        self.activation = nn.Softmax(dim=1)  #nn.Sigmoid()
 
     def forward(self, x):
         x = self.conv(x)
@@ -129,10 +144,13 @@ class UNet(nn.Module):
 
         self.input_image_shape = input_image_shape
 
+        # Here I define the number of channels in each part of the network
+
+        # The channels at the end of each conv block
         inner_channels = [first_layer_channels * 2**layer for layer in range(num_layers)]
 
-        encoder_block_input_channels = [input_channels,] + inner_channels[:-1]
         encoder_block_output_channels = inner_channels
+        encoder_block_input_channels = [input_channels,] + inner_channels[:-1]
         
         bottleneck_block_input_channels = encoder_block_output_channels[-1]
         bottleneck_block_output_channels = bottleneck_block_input_channels * 2
@@ -143,15 +161,21 @@ class UNet(nn.Module):
         head_block_input_channels = decoder_block_output_channels[-1]
         head_block_output_channels = out_channels
 
-
-        self.encoder_blocks = []
+        # Unlike normal encoder blocks, the in block doesn't start with pooling
+        in_block = nn.Sequential(
+            nn.Conv2d(encoder_block_input_channels[0], encoder_block_output_channels[0], kernel_size=3),
+            nn.LeakyReLU(),
+            nn.Conv2d(encoder_block_output_channels[0], encoder_block_output_channels[0], kernel_size=3),
+            nn.LeakyReLU()
+        )
 
         self.encoder_blocks = nn.ModuleList([
             EncoderBlock(in_ch, out_ch) for in_ch, out_ch
-            in zip(encoder_block_input_channels, encoder_block_output_channels)
-            ])
+            in zip(encoder_block_input_channels[1:], encoder_block_output_channels[1:])
+        ])
+        self.encoder_blocks.insert(0, in_block)
 
-        self.bottleneck_block = BottleneckBlock(bottleneck_block_input_channels, bottleneck_block_output_channels) 
+        self.bottleneck_block = EncoderBlock(bottleneck_block_input_channels, bottleneck_block_output_channels) 
 
         self.decoder_blocks = nn.ModuleList([
             DecoderBlock(in_ch, out_ch) for in_ch, out_ch 
@@ -162,19 +186,29 @@ class UNet(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Passes the batch forwards through the network."""
+
+        # print(f"Input tensor {x.shape=}")
         encoder_features = []
         for encoder_block in self.encoder_blocks:
             x = encoder_block(x)
             encoder_features.append(x)  # For the skip connections
+            # print(f"Encode block output {x.shape=}")
 
         x = self.bottleneck_block(x)
+        # print(f"Bottleneck output {x.shape}")
 
         for decoder_block, encoded_feature in zip(self.decoder_blocks, reversed(encoder_features)):
+            # print(f"Decode block input {x.shape=}, {encoded_feature.shape=}", end=' ')
             x = decoder_block(x, encoded_feature)
+            # print(f"output {x.shape=}")
 
         x = self.head_block(x)
+        # print(f"Head block output {x.shape=}")
 
-        x = nn.functional.interpolate(x, self.input_image_shape, mode='bilinear')
+        # x = nn.functional.interpolate(x, self.input_image_shape, mode='nearest')
+        # print(f"Head interpolation output {x.shape}")
+
+        # raise RuntimeError
 
         return x
 

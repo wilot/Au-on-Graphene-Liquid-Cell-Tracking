@@ -9,8 +9,8 @@
 [sheet_construction]
 sheet_size = 250  # Size in multiples of the `sheet_constructor`'s output 
 adatom_species = "Au"  # Use species names accepted by ASE
-sheet_holes = 30  # How many randomly sized holes to make in the sheet
-sheet_adatoms = 200  # How many adatoms to sprinkle onto the sheet
+sheet_holes = 90  # How many randomly sized holes to make in the sheet
+sheet_adatoms = 800  # How many adatoms to sprinkle onto the sheet
 
 [image_construction]
 pixel_scale = 0.27093246579170227  # The size of the pixels in the training data, in angstrom
@@ -23,10 +23,9 @@ haadf_zcontrast_exponent = 1.3
 training_patch_size = 512  # The size of the trianing patches in pixels
 zoom = 1.5  # The following params are for atomai.utils.datatransform()
 poisson = false
-# gauss = [400, 800]
-gauss = false
+gauss = [1, 20]
+# gauss = false
 salt_and_pepper = false
-# background = true
 background = false
-contrast = false
-blur = false
+contrast = true
+blur = true

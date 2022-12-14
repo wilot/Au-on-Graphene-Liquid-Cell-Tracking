@@ -3,6 +3,7 @@
 A custom U-Net implementation in PyTorch
 """
 
+from __future__ import annotations
 from pathlib import Path
 from typing import List, Tuple, Union
 
@@ -26,10 +27,10 @@ class EncoderBlock(nn.Module):
 
     def __init__(self, in_ch: int, out_ch: int):
         super(EncoderBlock, self).__init__()
-        self.conv1 = nn.Conv2d(in_ch, out_ch, kernel_size=3)
-        self.conv2 = nn.Conv2d(out_ch, out_ch, kernel_size=3)
+        self.conv1 = nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1)
         self.activation = nn.LeakyReLU()
-        self.pool = nn.MaxPool2d(2)
+        self.pool = nn.AvgPool2d(2)
 
     def forward(self, x):
         x = self.pool(x)
@@ -73,17 +74,14 @@ class DecoderBlock(nn.Module):
         self.out_ch = out_ch
         self.upconv = nn.Sequential(
             nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),  # nn.ConvTranspose2d(in_ch, out_ch, 2, 2)
-            nn.Conv2d(in_ch, in_ch//2, kernel_size=3)
+            nn.Conv2d(in_ch, in_ch//2, kernel_size=3, padding=1)
         )
-        self.conv1 = nn.Conv2d(in_ch, out_ch, kernel_size=3)
-        self.conv2 = nn.Conv2d(out_ch, out_ch, kernel_size=3)
+        self.conv1 = nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1)
         self.activation = nn.LeakyReLU()
 
     def forward(self, x, skip_features):
         x = self.upconv(x)  # Doubles image size and halves the number of channels
-        # print(f"{x.shape=}")
-        # print(f"{skip_features.shape=}")
-        # raise RuntimeError
         skip_features = self.crop(skip_features, x)  # Crops the skip features
         x = torch.cat((skip_features, x), dim=1)  # Stacks channels
         x = self.conv1(x)
@@ -104,7 +102,7 @@ class HeadBlock(nn.Module):
 
     def __init__(self, in_ch: int, out_ch: int):
         super(HeadBlock, self).__init__()
-        self.conv = nn.Conv2d(in_ch, out_ch, (1, 1))
+        self.conv = nn.Conv2d(in_ch, out_ch, kernel_size=1, padding=1)  # A 1x1 convolution
         self.activation = nn.Softmax(dim=1)  #nn.Sigmoid()
 
     def forward(self, x):
@@ -187,28 +185,18 @@ class UNet(nn.Module):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """Passes the batch forwards through the network."""
 
-        # print(f"Input tensor {x.shape=}")
         encoder_features = []
         for encoder_block in self.encoder_blocks:
             x = encoder_block(x)
             encoder_features.append(x)  # For the skip connections
-            # print(f"Encode block output {x.shape=}")
 
         x = self.bottleneck_block(x)
-        # print(f"Bottleneck output {x.shape}")
 
         for decoder_block, encoded_feature in zip(self.decoder_blocks, reversed(encoder_features)):
-            # print(f"Decode block input {x.shape=}, {encoded_feature.shape=}", end=' ')
             x = decoder_block(x, encoded_feature)
-            # print(f"output {x.shape=}")
 
         x = self.head_block(x)
-        # print(f"Head block output {x.shape=}")
-
         # x = nn.functional.interpolate(x, self.input_image_shape, mode='nearest')
-        # print(f"Head interpolation output {x.shape}")
-
-        # raise RuntimeError
 
         return x
 
@@ -240,7 +228,7 @@ class UNet(nn.Module):
         torch.save(self.state_dict(), filename)
 
     @classmethod
-    def load(cls, filename: Path):
+    def load(cls, filename: Path) -> UNet:
         return cls().load_state_dict(torch.load(filename))
 
     @property

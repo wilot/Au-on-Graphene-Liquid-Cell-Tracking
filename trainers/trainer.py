@@ -36,15 +36,17 @@ class Trainer:
         self.criterion = criterion
         self.optimiser = optimiser
         self.device = device
-        self.batch_size = batch_size
+        self.batch_size = batch_size if batch_size < test_images.shape[0] else 1
         self.training_cycles = training_cycles
 
         self.losses = {'train': [], 'test': []}  # History of test and train losses
 
         self.network.to(self.device)
 
-        self.X_train, self.X_test = torch.from_numpy(train_images), torch.from_numpy(test_images)
-        self.Y_train, self.Y_test = torch.from_numpy(train_labels), torch.from_numpy(test_labels)
+        to_torch = lambda nparr: torch.from_numpy(nparr)
+
+        self.X_train, self.X_test = to_torch(train_images), to_torch(test_images)
+        self.Y_train, self.Y_test = to_torch(train_labels), to_torch(test_labels)
         self.batch_data()  # Should give dimensions (batch_id, frame_num, channel, x_px, y_px)
 
         # Define the batches to process across
@@ -63,6 +65,7 @@ class Trainer:
         self.network.train()  # Training mode
         self.optimiser.zero_grad()
         output = self.network(X)
+        Y = crop_to_fit(Y, output.shape[-2:])
         loss = self.criterion(output, Y)
         loss.backward()
         self.optimiser.step()
@@ -75,6 +78,7 @@ class Trainer:
         self.network.eval()
         with torch.no_grad():
             output = self.network(X)
+            Y = crop_to_fit(Y, output.shape[-2:])
             loss = self.criterion(output, Y)
         return loss.item()
 
@@ -110,11 +114,11 @@ class Trainer:
 
         # Training step
         loss = self.train_step(X_train_batch, Y_train_batch)
-        self.losses['train'].append(loss)
+        self.losses['train'].append(loss / self.batch_size)
 
         # Test step
         loss = self.test_step(X_test_batch, Y_test_batch)
-        self.losses['test'].append(loss)
+        self.losses['test'].append(loss / self.batch_size)
 
     def run(self):
         """Iteratively trains the network through steps"""
@@ -161,26 +165,28 @@ class DiceLoss(nn.Module):
         super(DiceLoss, self).__init__()
         self.log_loss = log_loss
         self.weights = weights
+        self.smooth = 0.1
         
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor):
         """Expects inputs and targets of shape (B, C, H, W) for batch, channel, height and width."""
 
-        if targets.shape[-2:] != inputs.shape[:-2]:
+        if targets.shape[-2:] != inputs.shape[-2:]:
             targets = crop_to_fit(targets, inputs.shape[-2:])
-
-        epsilon = 1e-6  # For denominator numerical stability
 
         inputs = flatten(inputs)  # To shape (C, B*H*W)
         targets = flatten(targets)
 
         intersection = (inputs * targets).sum(-1)
-        denominator = (inputs + targets).sum(-1)
-        if self.weights is not None:
-            intersection = self.weights * intersection
-        dice = (2. * intersection) / (denominator.clamp(min=epsilon))
-        dice_loss = 1 - dice if not self.log_loss else -torch.log(dice)
-        dice_loss = dice_loss.sum() / dice_loss.shape[0]
+        denominator = (inputs*inputs).sum(-1) + (targets*targets).sum(-1)
+
+        dice = (2. * intersection + self.smooth) / (denominator + self.smooth)
+        dice_loss = 1 - dice if not self.log_loss else -torch.log(dice)  # Loss for each channel
+        if self.weights is None:
+            dice_loss = dice_loss.sum() / dice_loss.shape[0]
+        else:
+            dice_loss = (dice_loss * self.weights).sum()
+
         return dice_loss
 
     def __str__(self):
@@ -208,21 +214,27 @@ class DiceBCELoss(nn.Module):
 
     def forward(self, inputs: torch.Tensor, targets: torch.Tensor):
 
-        if targets.shape[-2:] != inputs.shape[:-2]:
+        if targets.shape[-2:] != inputs.shape[-2:]:
             targets = crop_to_fit(targets, inputs.shape[-2:])
 
-        epsilon = 1e-6  # For denominator numerical stability
-
+        # Dice loss
         inputs = flatten(inputs)  # To shape (C, B*H*W)
         targets = flatten(targets)
 
-        intersection = (inputs * targets).sum(-1)  # Gives shape (C,)
-        denominator = (inputs + targets).sum(-1)
+        intersection = (inputs * targets).sum(-1)
+        denominator = (inputs*inputs).sum(-1) + (targets*targets).sum(-1)
 
-        dice_loss = (2. * intersection) / denominator.clamp(min=epsilon)
-        dice_loss = 1 - dice_loss if not self.log_loss else -torch.log(dice_loss)
+        dice = (2. * intersection + 1.) / (denominator + 1.)
+        dice_loss = 1 - dice if not self.log_loss else -torch.log(dice)  # Loss for each channel
+        if self.weights is None:
+            dice_loss = dice_loss.sum() / dice_loss.shape[0]
+        else:
+            dice_loss = (dice_loss * self.weights).sum()
+        
+        # BCE loss
         BCE = F.binary_cross_entropy(inputs, targets, reduction='mean')
 
+        # Combination
         Dice_BCE_loss = self.ratio[1] * BCE + self.ratio[0] * dice_loss
 
         if self.weights is not None:
@@ -236,6 +248,29 @@ class DiceBCELoss(nn.Module):
         return name
 
 
+class IoULoss(nn.Module):
+    """Jaccard i.e. IoU loss"""
+
+    def __init__(self) -> None:
+        super().__init__()
+
+        self.smooth = 1.
+
+    def forward(self, inputs: torch.Tensor, targets: torch.Tensor):
+
+        inputs = flatten(inputs)  # (C, B*H*W)
+        targets = flatten(targets)
+
+        intersection = (inputs * targets).sum(-1)
+        total = (inputs + targets).sum(-1)
+        union = total - intersection
+
+        IoU = (intersection + self.smooth) / (union + self.smooth)
+        IoU_loss = 1 - IoU  # This is still per channel
+
+        return IoU_loss.sum()
+
+
 class FocalLoss(nn.Module):
     """Focal Loss, wights are for class weightings, a shape (C,) torch tensor or None."""
     def __init__(self, alpha=0.8, gamma=2., weights: Union[torch.Tensor, None]=None) -> None:
@@ -246,7 +281,7 @@ class FocalLoss(nn.Module):
     
     def forward(self, inputs, targets):
 
-        if targets.shape[-2:] != inputs.shape[:-2]:
+        if targets.shape[-2:] != inputs.shape[-2:]:
             targets = crop_to_fit(targets, inputs.shape[-2:])
 
         inputs = flatten(inputs)  # To shape (C, B*H*W)
@@ -282,7 +317,7 @@ class TverskyLoss(nn.Module):
 
     def forward(self, inputs, targets, smooth=1):
 
-        if targets.shape[-2:] != inputs.shape[:-2]:
+        if targets.shape[-2:] != inputs.shape[-2:]:
             targets = crop_to_fit(targets, inputs.shape[-2:])
 
         inputs = torch.reshape(inputs, (-1,))

@@ -3,7 +3,8 @@
 A module for synthesising trianing data for a U-Net operating on atomic-resolution HAADF STEM images of adatoms 
 supperted on a sheet of 2D material. Atoms are modelled as 2D gaussian blobs with HAADF contrast.
 
-TODO: Running out of RAM (>250Gb) -> integrate Dask
+TODO: Running out of RAM (>250Gb) -> integrate Dask : Works but each stack needs to be loaded into memory 
+(sequentially now)
 TODO: Add functionality to generate vector-field + heatmaps for labels instead of just bool disks
         - Extract image generation to its own method.
 
@@ -21,6 +22,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import convolve
 from sklearn.model_selection import train_test_split
+import h5py
 
 import atomai
 import ase
@@ -280,6 +282,12 @@ class TrainingDataFactory:
         if isinstance(self.training_patch_size, int):
             self.training_patch_size = (self.training_patch_size, 
                                         self.training_patch_size)
+
+        if any([self.training_patch_size[ax] > training_image.shape[ax] for ax in (0, 1)]):
+            error_msg = f"WARNING: Synthesised training image is smaller than the size of the desired patches. \n"
+            error_msg += f"{self.training_patch_size=}\n"
+            error_msg += f"{training_image.shape=}"
+            raise ValueError(error_msg)
         
         training_patch_area = self.training_patch_size[0] * self.training_patch_size[1]
         training_image_area = training_image.shape[0] * training_image.shape[1]
@@ -326,10 +334,11 @@ class TrainingDataFactory:
         defective_sheet = self.sheet_constructor()
         training_image, ground_truth_dict, ground_truth_flat = self.image_constructor(defective_sheet)
         ground_truth = np.array([ground_truth_dict[species] for species in self.atom_species_order])
-        ground_truth = np.moveaxis(ground_truth, 0, -1)
+        ground_truth = np.moveaxis(ground_truth, 0, -1)  # Channel last for patcher_and_scrambler
         training_images, ground_truths = self.patcher_and_scrambler(training_image, ground_truth)
+        ground_truths = np.moveaxis(ground_truths, -1, 1)  # Channel first for pyTorch
 
-        return training_images, ground_truths
+        return training_images.astype(np.float32), ground_truths.astype(np.float32)
 
 
 def graphene_sheet_constructor(size_a: int, size_b: int) -> ase.Atoms:
@@ -341,18 +350,42 @@ def graphene_sheet_constructor(size_a: int, size_b: int) -> ase.Atoms:
     return sheet
 
 
+def plot_sample(job: Callable):
+    """Plots a sample of the output from a single job/iteration"""
+
+    training_patches, ground_truth_patches = job()
+    num_samples = 5
+    fig, axes = plt.subplots(3, num_samples, sharex=True, sharey=True)
+    for ax_col, training_patch, gt_patch in zip(axes.T, training_patches, ground_truth_patches):
+        ax_col[0].imshow(training_patch[0]**0.5)
+        ax_col[1].imshow(gt_patch[0])
+        ax_col[2].imshow(gt_patch[1])
+    axes[0, 0].set_ylabel("Training image ^0.5")
+    axes[1, 0].set_ylabel("Ground Truth Lattice")
+    axes[2, 0].set_ylabel("Ground Truth Adatom")
+    fig.suptitle(f"Training data sample ({num_samples} of training_patches.shape[0] * #iterations)")
+    for ax in axes.flatten(): 
+        ax.set_axis_off()
+    plt.show(block=True)
+
+
 if __name__ == "__main__":
    
+    TESTING_RUN = False
     config_filename = Path(CONFIG_FILENAME)
-    iterations, cores = 500, 40  # DANGER!!! Be reasonable, don't melt your PC! No point < 3 iterations per core
+    iterations, cores = 200, 40  # DANGER!!! Be reasonable, don't melt your PC! No point < 3 iterations per core
 
     def job():
         data_factory = TrainingDataFactory(graphene_sheet_constructor, config_filename)
         training_patches, ground_truth_patches = data_factory.run()
         return training_patches, ground_truth_patches
 
+    if TESTING_RUN:
+        plot_sample(job)
+        exit(0)
+
     with multiprocessing.Pool(cores) as pool:
-        print(f"Beginning synthesis, laynching {iterations} synthesisers on {cores} cores.")
+        print(f"Beginning synthesis, launching {iterations} synthesisers on {cores} cores.")
         future_results = [pool.apply_async(job) for _ in range(iterations)]
         results = [future_result.get() for future_result in future_results]
         print("Synthesis complete, processes rejoined.")
@@ -361,12 +394,14 @@ if __name__ == "__main__":
     gt_patch_stacks = [result[1] for result in results]
 
     print("Saved patches to lists")
+
+    dataset_chunking = (1_000, -1, -1, -1)
     
     image_patches = np.array(image_patch_stacks)
     image_patches = image_patches.reshape(-1, *image_patches.shape[2:])
     print(f"Images saved to numpy array of shape {image_patches.shape}")
-    image_patches = da.from_array(image_patches, chunks=(500, -1, -1, -1))  # Chunks ~1GB for 512x512 double
-    image_patches = da.moveaxis(image_patches, 1, -1)
+    image_patches = da.from_array(image_patches, chunks=dataset_chunking)  # Chunks ~1GB for 512x512 float
+    # image_patches = da.moveaxis(image_patches, 1, -1)
     print(f"{image_patches.chunks=}")
     print(f"{image_patches.shape=}")
     print(f"{image_patches.dtype=}")
@@ -374,7 +409,7 @@ if __name__ == "__main__":
     gt_patches = np.array(gt_patch_stacks)
     gt_patches = gt_patches.reshape(-1, *gt_patches.shape[2:])
     print(f"Ground-truth masks saved to numpy array of shape {gt_patches.shape}")
-    gt_patches = da.from_array(gt_patches, chunks=(500, -1, -1, -1))  # Chunks 
+    gt_patches = da.from_array(gt_patches, chunks=dataset_chunking)  # Chunks 
     print(f"{gt_patches.chunks=}")
     print(f"{gt_patches.shape=}")
     print(f"{gt_patches.dtype=}")
@@ -384,10 +419,17 @@ if __name__ == "__main__":
     # np.savez('au_on_graphene_gaussian_training_data_large.npz', X_train=image_patches_train, 
     #         X_test=images_patches_test, y_train=gt_patches_train, y_test=gt_patches_test)
 
-    image_patches_train, images_patches_test, gt_patches_train, gt_patches_test = \
+    images_patches_train, images_patches_test, gt_patches_train, gt_patches_test = \
         dask_ml.model_selection.train_test_split(image_patches, gt_patches, test_size=0.25, random_state=42)
-    da.to_hdf5('au_on_graphene_gausian_training_data_large.hdf5', {'/X_train': image_patches_train, 
-    '/X_test': images_patches_test, '/y_train': gt_patches_train, '/y_test': gt_patches_test})
+
+    save_file = h5py.File('synthesisers/au_on_graphene_scrambled_gaussian_training_data_large.hdf5', 'x')
+
+    for stack, stack_dir_name in zip((images_patches_train, images_patches_test, gt_patches_train, gt_patches_test),
+                                     ('/images_train', '/images_test', '/labels_train', '/labels_test')):
+        in_memory_stack = stack.compute()  # Loads the whole thing into memory. Needed to know the shape for some reason...
+        chunk_shape = (min(dataset_chunking[0], in_memory_stack.shape[0]), *in_memory_stack.shape[1:])
+        dask_stack = da.from_array(in_memory_stack, chunks=chunk_shape)
+        save_dset = save_file.create_dataset(stack_dir_name, in_memory_stack.shape, np.float32, chunks=chunk_shape)
+        da.store(dask_stack, save_dset)
 
     print("Program complete.")
-

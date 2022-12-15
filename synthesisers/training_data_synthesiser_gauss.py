@@ -16,8 +16,8 @@ from pathlib import Path
 
 import toml
 
+import dask
 import dask.array as da
-import dask_ml.model_selection
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.ndimage import convolve
@@ -372,8 +372,9 @@ def plot_sample(job: Callable):
 if __name__ == "__main__":
    
     TESTING_RUN = False
+    DASK = False
     config_filename = Path(CONFIG_FILENAME)
-    iterations, cores = 200, 40  # DANGER!!! Be reasonable, don't melt your PC! No point < 3 iterations per core
+    iterations, cores = 100, 25  # DANGER!!! Be reasonable, don't melt your PC! No point < 3 iterations per core
 
     def job():
         data_factory = TrainingDataFactory(graphene_sheet_constructor, config_filename)
@@ -399,37 +400,45 @@ if __name__ == "__main__":
     
     image_patches = np.array(image_patch_stacks)
     image_patches = image_patches.reshape(-1, *image_patches.shape[2:])
-    print(f"Images saved to numpy array of shape {image_patches.shape}")
-    image_patches = da.from_array(image_patches, chunks=dataset_chunking)  # Chunks ~1GB for 512x512 float
-    # image_patches = da.moveaxis(image_patches, 1, -1)
-    print(f"{image_patches.chunks=}")
-    print(f"{image_patches.shape=}")
-    print(f"{image_patches.dtype=}")
+    print(f"Images saved to numpy {image_patches.dtype} array of shape {image_patches.shape}")
+    if DASK:
+        image_patches = da.from_array(image_patches, chunks=dataset_chunking)  # Chunks ~1GB for 512x512 float
+        print(f"{image_patches.chunks=}")
 
     gt_patches = np.array(gt_patch_stacks)
     gt_patches = gt_patches.reshape(-1, *gt_patches.shape[2:])
-    print(f"Ground-truth masks saved to numpy array of shape {gt_patches.shape}")
-    gt_patches = da.from_array(gt_patches, chunks=dataset_chunking)  # Chunks 
-    print(f"{gt_patches.chunks=}")
-    print(f"{gt_patches.shape=}")
-    print(f"{gt_patches.dtype=}")
+    print(f"Ground-truth masks saved to numpy {gt_patches.dtype} array of shape {gt_patches.shape}")
+    if DASK:
+        gt_patches = da.from_array(gt_patches, chunks=dataset_chunking)  # Chunks 
+        print(f"{gt_patches.chunks=}")
 
-    # image_patches_train, images_patches_test, gt_patches_train, gt_patches_test = train_test_split(image_patches, 
-    #         gt_patches, test_size=0.25, random_state=42)
-    # np.savez('au_on_graphene_gaussian_training_data_large.npz', X_train=image_patches_train, 
-    #         X_test=images_patches_test, y_train=gt_patches_train, y_test=gt_patches_test)
+    if not DASK:
+        image_patches_train, images_patches_test, gt_patches_train, gt_patches_test = train_test_split(image_patches, 
+                gt_patches, test_size=0.25, random_state=42)
+        np.savez('au_on_graphene_gaussian_training_data_large.npz', X_train=image_patches_train, 
+                X_test=images_patches_test, y_train=gt_patches_train, y_test=gt_patches_test)
+    else:
+        # Implement shuffling myself because Dask's doesn't work
+        shuffled_indices = np.random.permutation(image_patches.shape[0])
+        test_size = 0.2
+        test_indices = shuffled_indices[:int(len(shuffled_indices) * test_size)]  # the first (test_size) indices
+        train_indices = shuffled_indices[int(len(shuffled_indices) * test_size):]  # the rest
+        images_patches_train, images_patches_test = image_patches[train_indices], image_patches[test_indices]
+        gt_patches_train, gt_patches_test = gt_patches[train_indices], gt_patches[test_indices]
 
-    images_patches_train, images_patches_test, gt_patches_train, gt_patches_test = \
-        dask_ml.model_selection.train_test_split(image_patches, gt_patches, test_size=0.25, random_state=42)
+        images_patches_train, images_patches_test, gt_patches_train, gt_patches_test = dask.persist(images_patches_train, 
+            images_patches_test, gt_patches_train, gt_patches_test)
 
-    save_file = h5py.File('synthesisers/au_on_graphene_scrambled_gaussian_training_data_large.hdf5', 'x')
+        # This is an absolute bastard! It does not work! Outputs 1D nonsense. Grrr...... :(
+        # images_patches_train, images_patches_test, gt_patches_train, gt_patches_test = \
+        #     dask_ml.model_selection.train_test_split(image_patches, gt_patches, test_size=0.25, random_state=42)
 
-    for stack, stack_dir_name in zip((images_patches_train, images_patches_test, gt_patches_train, gt_patches_test),
-                                     ('/images_train', '/images_test', '/labels_train', '/labels_test')):
-        in_memory_stack = stack.compute()  # Loads the whole thing into memory. Needed to know the shape for some reason...
-        chunk_shape = (min(dataset_chunking[0], in_memory_stack.shape[0]), *in_memory_stack.shape[1:])
-        dask_stack = da.from_array(in_memory_stack, chunks=chunk_shape)
-        save_dset = save_file.create_dataset(stack_dir_name, in_memory_stack.shape, np.float32, chunks=chunk_shape)
-        da.store(dask_stack, save_dset)
+        dataset = {
+            '/images_train': images_patches_train,
+            '/images_test': images_patches_test,
+            '/labels_train': gt_patches_train,
+            '/labels_test': gt_patches_test
+        }
+        da.to_hdf5('synthesisers/au_on_graphene_scrambled_gaussian_training_data_large.hdf5', dataset)
 
     print("Program complete.")

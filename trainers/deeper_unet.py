@@ -72,12 +72,13 @@ class DecoderBlock(nn.Module):
         super(DecoderBlock, self).__init__()
         self.in_ch = in_ch
         self.out_ch = out_ch
-        self.upconv = nn.Sequential(
-            nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),  # nn.ConvTranspose2d(in_ch, out_ch, 2, 2)
-            nn.Conv2d(in_ch, in_ch//2, kernel_size=3, padding=1)
-        )
-        self.conv1 = nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1)
-        self.conv2 = nn.Conv2d(out_ch, out_ch, kernel_size=3, padding=1)
+        # self.upconv = nn.Sequential(
+        #     nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True),  # nn.ConvTranspose2d(in_ch, out_ch, 2, 2)
+        #     nn.Conv2d(in_ch, in_ch//2, kernel_size=3, padding=1)
+        # )
+        self.upconv = nn.Upsample(scale_factor=2, mode='bilinear', align_corners=True)
+        self.conv1 = nn.Conv2d(in_ch + in_ch//2, in_ch, kernel_size=3, padding=1)
+        self.conv2 = nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1)
         self.activation = nn.LeakyReLU()
 
     def forward(self, x, skip_features):

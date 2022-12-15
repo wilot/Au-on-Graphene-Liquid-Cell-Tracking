@@ -13,14 +13,14 @@ sheet_holes = 90  # How many randomly sized holes to make in the sheet
 sheet_adatoms = 800  # How many adatoms to sprinkle onto the sheet
 
 [image_construction]
-pixel_scale = 0.27093246579170227  # The size of the pixels in the training data, in angstrom
+pixel_scale = 0.135466233 # Half the 0.27093246579170227angstrom size of the pixels in the training data, in angstrom
 atom_radius = 0.4  # The 1-sigma radius of the gaussians that form the atoms
 atom_species_order = ["C", "Au"]  # The atom species included in the output labels
 atom_brightnesses = false  # A list of the amplitudes of the gaussians for each species
-haadf_zcontrast_exponent = 1.3
+haadf_zcontrast_exponent = 0.8
 
 [patcher_and_scrambler]
-training_patch_size = 512  # The size of the trianing patches in pixels
+training_patch_size = 512  # The size of the training patches in pixels
 zoom = 1.5  # The following params are for atomai.utils.datatransform()
 poisson = false
 gauss = [1, 20]

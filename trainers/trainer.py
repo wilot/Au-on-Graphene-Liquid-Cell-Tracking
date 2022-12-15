@@ -120,6 +120,9 @@ class Trainer:
         loss = self.test_step(X_test_batch, Y_test_batch)
         self.losses['test'].append(loss / self.batch_size)
 
+        del X_train_batch, X_test_batch, Y_train_batch, Y_test_batch
+        torch.cuda.empty_cache()
+
     def run(self):
         """Iteratively trains the network through steps"""
 
@@ -129,7 +132,7 @@ class Trainer:
     def plot_losses(self, plot=True) -> matplotlib.figure.Figure:
         """Plots the training and test loss during training (non-blocking)"""
         fig, ax = plt.subplots()
-        ax.plot(self.losses['train'], label='Training Loss')
+        ax.plot(self.losses['train'], label='Training Losses')
         ax.plot(self.losses['test'], label='Testing Losses')
         ax.set_xlabel("Training Cycle")
         ax.set_ylabel("Loss")
@@ -161,10 +164,10 @@ class DiceLoss(nn.Module):
     
     The weights should be a tensor of shape (C,) for C channels and on the same device as the model.
     """
-    def __init__(self, log_loss: bool=False, weights: Union[torch.Tensor, None]=None):
+    def __init__(self, log_loss: bool=False, weights: Union[Tuple[List[float], torch.device], None]=None):
         super(DiceLoss, self).__init__()
         self.log_loss = log_loss
-        self.weights = weights
+        self.weights = torch.tensor(weights[0], device=weights[1]) if weights is not None else None
         self.smooth = 0.1
         
 
